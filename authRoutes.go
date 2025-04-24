@@ -131,8 +131,7 @@ func handleUserRegister(c *gin.Context, db *sql.DB) {
 		c.JSON(http.StatusConflict, gin.H{"error": "❌ Username sudah terdaftar"})
 		return
 	}
-	
-	
+
 	//hashedPwd, _ := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
 	hashedPwd, error := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
 	if error != nil {
@@ -167,8 +166,14 @@ func handleEmployeeRegister(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	if strings.ToLower(input.Role) != "employee" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "❌ Role harus 'employee'"})
+	validRoles := map[string]bool{
+		"cashier": true,
+		"stocker": true,
+		"manager": true,
+	}
+
+	if !validRoles[strings.ToLower(input.Role)] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "❌ Role harus salah satu dari 'cashier', 'stocker', atau 'manager'"})
 		return
 	}
 

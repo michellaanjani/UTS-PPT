@@ -94,7 +94,7 @@ func SetNullableFieldsForVariant(isVarians bool, product *ProductsModel) {
 		product.DiscountPrice = nil
 		product.Price = nil
 		product.Stock = nil
-		product.IsService = nil
+		product.IsService = false
 	}
 }
 
@@ -106,9 +106,6 @@ func SetRequiredFieldsForNonVariant(product *ProductsModel) error {
 	if product.Stock == nil || *product.Stock < 0 {
 		return fmt.Errorf("❌ Stok wajib diisi dan tidak boleh negatif")
 	}
-	if product.IsService == nil {
-		return fmt.Errorf("❌ Status layanan (is_service) wajib diisi")
-	}
 	if product.IsDiscounted != nil && *product.IsDiscounted {
 		if product.DiscountPrice == nil {
 			return fmt.Errorf("❌ Harga diskon wajib diisi jika produk sedang diskon")
@@ -119,13 +116,18 @@ func SetRequiredFieldsForNonVariant(product *ProductsModel) error {
 	}
 	return nil
 }
-//helper function untuk products
-func ValidateProductInput(product *ProductsModel) error {
+
+// helper function untuk products
+func ValidateProductInput(product *ProductsModel, c *gin.Context, db *sql.DB) error {
 	if strings.TrimSpace(product.Name) == "" {
 		return fmt.Errorf("❌ Nama produk tidak boleh kosong")
 	}
 	if strings.TrimSpace(product.Description) == "" {
 		return fmt.Errorf("❌ Deskripsi produk tidak boleh kosong")
+	}
+	// check if categiory_id is valid
+	if !ValidateRecordExistence(c, db, "categories", product.CategoryID) {
+		return fmt.Errorf("❌ Kategori tidak ditemukan")
 	}
 	if product.CategoryID == 0 {
 		return fmt.Errorf("❌ ID kategori tidak boleh 0")
@@ -140,7 +142,6 @@ func ValidateProductInput(product *ProductsModel) error {
 	}
 	return nil
 }
-
 
 // =========================
 // 🛠️ Cart TotalPrice Helpers
@@ -175,12 +176,6 @@ func SubtractFromCartTotalPrice(db *sql.DB, cartID int, amount int) error {
 // =========================
 func CategoryRoutes(r *gin.Engine, db *sql.DB) {
 	api := r.Group("/api/v1/categories")
-
-	// // 🟢 Public untuk semua yang login
-	// api.GET("", AuthMiddleware(), func(c *gin.Context) {
-	// 	GetAllCategories(c, db)
-	// })
-	// 🟢 Public untuk semua tanpa login
 	api.GET("", func(c *gin.Context) {
 		GetAllCategories(c, db)
 	})
@@ -199,7 +194,6 @@ func CategoryRoutes(r *gin.Engine, db *sql.DB) {
 		})
 	}
 }
-
 
 // ++++++++++++++++++++++++
 //
@@ -278,22 +272,7 @@ func UpdateCategory(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// id := c.Param("id")
 	var input CategoryModel
-	// //id string to int
-	// idInt, err := strconv.Atoi(id)
-	// if err != nil {
-	// 	c.JSON(http.StatusBadRequest, gin.H{"error": "❌ ID harus berupa angka"})
-	// 	return
-	// }
-	// // Cek apakah kategori dengan ID tersebut ada
-	// if valid, err := IsValidID(db, "categories", idInt); err != nil {
-	// 	c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal memeriksa ID kategori"})
-	// 	return
-	// } else if !valid {
-	// 	c.JSON(http.StatusNotFound, gin.H{"error": "❌ Kategori tidak ditemukan"})
-	// 	return
-	// }
 
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "❌ Data tidak valid"})
@@ -334,7 +313,7 @@ func DeleteCategory(c *gin.Context, db *sql.DB) {
 	if !ok {
 		return
 	}
-	
+
 	// //cek apakah id valid
 	if !ValidateRecordExistence(c, db, "categories", idInt) {
 		return
@@ -350,8 +329,6 @@ func DeleteCategory(c *gin.Context, db *sql.DB) {
 		"message": "✅ Kategori berhasil dihapus",
 	})
 }
-
-
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -381,10 +358,10 @@ func ProductRoutes(r *gin.Engine, db *sql.DB) {
 	}
 }
 
-
-
 // ++++++++++++++++++++++++
-//  Product READ
+//
+//	Product READ
+//
 // +++++++++++++++++++++++++
 func GetAllProducts(c *gin.Context, db *sql.DB) {
 	rows, err := db.Query(`
@@ -446,20 +423,16 @@ func CreateProduct(c *gin.Context, db *sql.DB) {
 	}
 
 	// Validasi logika produk berdasarkan is_varians
-	if err := ValidateProductInput(&product); err != nil {
+	if err := ValidateProductInput(&product, c, db); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-
-	// Set waktu created dan updated
-	product.CreatedAt = time.Now()
-	product.UpdatedAt = time.Now()
 
 	// Masukkan ke database
 	query := `
 		INSERT INTO products 
 		(category_id, name, description, is_varians, is_discounted, discount_price, price, stock, is_service, created_at, updated_at) 
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`
 
 	res, err := db.Exec(query,
 		product.CategoryID,
@@ -499,217 +472,155 @@ func CreateProduct(c *gin.Context, db *sql.DB) {
 	})
 }
 
-
-// func CreateProduct(c *gin.Context, db *sql.DB) {
-// 	var input ProductsModel
-
-// 	if err := c.ShouldBindJSON(&input); err != nil {
-// 		c.JSON(http.StatusBadRequest, gin.H{"error": "❌ Format JSON tidak valid"})
-// 		return
-// 	}
-
-// 	// Validasi field wajib
-// 	if input.Name == "" || input.Price <= 50 || input.Description == "" {
-// 		c.JSON(http.StatusBadRequest, gin.H{"error": "❌ Nama, deskripsi, dan harga produk wajib diisi"})
-// 		return
-// 	}
-
-// 	// Validasi panjang nama dan deskripsi (optional tapi bagus)
-// 	if len(input.Name) > 100 {
-// 		c.JSON(http.StatusBadRequest, gin.H{"error": "⚠️ Nama tidak boleh lebih dari 100 karakter"})
-// 		return
-// 	}
-
-// 	// Validasi discount_price < price jika diisi
-// 	if input.DiscountPrice != nil && *input.DiscountPrice >= input.Price {
-// 		c.JSON(http.StatusBadRequest, gin.H{"error": "⚠️ discount_price harus lebih murah dari price"})
-// 		return
-// 	}
-
-// 	// Set otomatis is_discounted jika discount_price valid
-// 	isDiscounted := false
-// 	if input.DiscountPrice != nil {
-// 		isDiscounted = true
-// 	}
-// 	if input.CategoryID != nil {	
-// 		if !ValidateRecordExistence(c, db, "categories", *input.CategoryID) {
-// 			return
-// 		}
-// 	}	
-
-// 	// // Cek apakah category_id valid
-// 	// if input.CategoryID != nil {
-// 	// 	//valid, err := IsValidCategoryID(db, *input.CategoryID)
-// 	// 	valid, err := IsValidID(db, "categories", *input.CategoryID)
-// 	// 	if err != nil {
-// 	// 		c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal memeriksa category_id"})
-// 	// 		return
-// 	// 	}
-// 	// 	if !valid {
-// 	// 		c.JSON(http.StatusBadRequest, gin.H{"error": "⚠️ category_id tidak ditemukan"})
-// 	// 		return
-// 	// 	}
-// 	// }
-
-// 	query := `
-// 		INSERT INTO products (name, description, price, category_id, is_discounted, discount_price, is_service)
-// 		VALUES (?, ?, ?, ?, ?, ?, ?)
-// 	`
-
-// 	result, err := db.Exec(query,
-// 		input.Name,
-// 		input.Description,
-// 		input.Price,
-// 		input.CategoryID,
-// 		isDiscounted,
-// 		input.DiscountPrice,
-// 		input.IsService,
-// 	)
-// 	if err != nil {
-// 		c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal menyimpan produk"})
-// 		return
-// 	}
-
-// 	insertedID, _ := result.LastInsertId()
-
-// 	c.JSON(http.StatusCreated, gin.H{
-// 		"message": "✅ Produk berhasil ditambahkan",
-// 		"id":      insertedID,
-// 	})
-// }
-
 // ++++++++++++++++++++++++
 //
 //	Product UPDATE
 //
 // ++++++++++++++++++++++++
 func UpdateProduct(c *gin.Context, db *sql.DB) {
-	// Mengambil ID parameter dan validasi
-	idInt, id, ok := GetIDParam(c)
+	// Ambil ID dari parameter
+	idInt, _, ok := GetIDParam(c)
 	if !ok {
 		return
 	}
 
-	// Validasi apakah produk dengan ID ada
-	if !ValidateRecordExistence(c, db, "products", idInt) {
+	// Ambil produk dari database
+	var product struct {
+		CategoryID    int
+		IsVarians     bool
+		IsDiscounted  sql.NullBool
+		DiscountPrice sql.NullInt64
+		Price         sql.NullInt64
+		Stock         sql.NullInt64
+		IsService     sql.NullBool
+	}
+	err := db.QueryRow(`SELECT category_id, is_varians, is_discounted, discount_price, price, stock, is_service FROM products WHERE id = ?`, idInt).
+		Scan(&product.CategoryID, &product.IsVarians, &product.IsDiscounted, &product.DiscountPrice, &product.Price, &product.Stock, &product.IsService)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "❌ Produk tidak ditemukan"})
 		return
 	}
 
-	// Menerima input dari request
+	// Bind input dari request
 	var input map[string]interface{}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "❌ Data tidak valid"})
 		return
 	}
-
-	// Pastikan ada data untuk diupdate
 	if len(input) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "❌ Tidak ada data untuk diupdate"})
 		return
 	}
 
-	// Cek dan handle is_varians
-	if isVariansRaw, exists := input["is_varians"]; exists {
-		isVarians, ok := isVariansRaw.(bool)
-		if !ok {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "❌ is_varians harus berupa boolean"})
-			return
-		}
-
-		// Jika is_varians true, set semua field yang berhubungan dengan harga, stok, dan layanan menjadi nil
-		if isVarians {
-			input["price"] = nil
-			input["stock"] = nil
-			input["is_service"] = nil
-			input["discount_price"] = nil
-			input["is_discounted"] = false
-		}
-	}
-
-	// Cek dan handle discount_price
-	if dpRaw, exists := input["discount_price"]; exists {
-		// Kalau nil / kosong / nol, anggap batal diskon
-		if dpRaw == nil || dpRaw == "" {
-			input["discount_price"] = nil
-			input["is_discounted"] = false
-		} else {
-			discountPrice, ok := dpRaw.(float64)
-			if !ok {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "❌ discount_price harus berupa angka"})
-				return
-			}
-
-			var currentPrice float64
-
-			if pRaw, ok := input["price"]; ok {
-				price, ok := pRaw.(float64)
-				if !ok {
-					c.JSON(http.StatusBadRequest, gin.H{"error": "❌ price harus berupa angka"})
-					return
-				}
-				currentPrice = price
-			} else {
-				err := db.QueryRow("SELECT price FROM products WHERE id = ?", id).Scan(&currentPrice)
-				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal mengambil harga produk"})
-					return
-				}
-			}
-
-			if discountPrice >= currentPrice {
-				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("⚠️ discount_price harus lebih murah dari price: %.2f >= %.2f", discountPrice, currentPrice)})
-				return
-			}
-
-			// Set is_discounted to true
-			input["is_discounted"] = true
-		}
-	}
-
-	// Cek apakah category_id ada dan valid
-	if categoryIDRaw, exists := input["category_id"]; exists {
+	// Validasi category_id jika ada
+	if categoryIDRaw, ok := input["category_id"]; ok {
 		categoryID, ok := categoryIDRaw.(float64)
 		if !ok {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "❌ category_id harus berupa angka"})
 			return
 		}
-		if !ValidateRecordExistence(c, db, "categories", int(categoryID)) {
+		var count int
+		err := db.QueryRow("SELECT COUNT(*) FROM categories WHERE id = ?", int(categoryID)).Scan(&count)
+		if err != nil || count == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "❌ category_id tidak valid"})
 			return
 		}
 	}
 
-	// Bangun query dinamis untuk update produk
-	var fields []string
-	var values []interface{}
-
-	for key, value := range input {
-		fields = append(fields, fmt.Sprintf("%s = ?", key))
-		values = append(values, value)
+	// Ambil is_varians dari input jika ada, jika tidak gunakan dari DB
+	isVarians := product.IsVarians
+	if raw, ok := input["is_varians"]; ok {
+		val, ok := raw.(bool)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "❌ is_varians harus berupa boolean"})
+			return
+		}
+		isVarians = val
 	}
 
-	// Tambahkan ID untuk WHERE clause
-	values = append(values, id)
+	if isVarians {
+		// Kosongkan field yang tidak relevan
+		input["price"] = nil
+		input["stock"] = nil
+		input["is_service"] = false
+		input["discount_price"] = nil
+		input["is_discounted"] = nil
+	} else {
+		// Validasi is_discounted
+		isDiscounted := false
+		if val, ok := input["is_discounted"].(bool); ok {
+			isDiscounted = val
+		} else if product.IsDiscounted.Valid {
+			isDiscounted = product.IsDiscounted.Bool
+		}
 
-	// Format query dan eksekusi update
+		// Jika produk diskon, validasi harga
+		if isDiscounted {
+			var price float64
+			if val, ok := input["price"].(float64); ok {
+				price = val
+			} else if product.Price.Valid {
+				price = float64(product.Price.Int64)
+			} else {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "❌ price diperlukan untuk produk diskon"})
+				return
+			}
+
+			var discountPrice float64
+			if val, ok := input["discount_price"].(float64); ok {
+				discountPrice = val
+			} else if product.DiscountPrice.Valid {
+				discountPrice = float64(product.DiscountPrice.Int64)
+			} else {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "❌ discount_price diperlukan untuk produk diskon"})
+				return
+			}
+
+			if discountPrice >= price {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("⚠️ discount_price harus lebih kecil dari price: %.2f >= %.2f", discountPrice, price)})
+				return
+			}
+		}
+
+		// Validasi stock
+		if stockVal, ok := input["stock"]; ok {
+			stock, ok := stockVal.(float64)
+			if !ok || stock < 0 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "❌ stock harus angka >= 0"})
+				return
+			}
+		} else if !product.Stock.Valid {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "❌ stock harus tersedia untuk produk tanpa variasi"})
+			return
+		}
+
+		// Validasi is_service
+		if _, ok := input["is_service"]; !ok && !product.IsService.Valid {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "❌ is_service harus tersedia untuk produk tanpa variasi"})
+			return
+		}
+	}
+
+	// Build query update secara dinamis
+	var fields []string
+	var args []interface{}
+	for key, val := range input {
+		fields = append(fields, fmt.Sprintf("%s = ?", key))
+		args = append(args, val)
+	}
+	fields = append(fields, "updated_at = ?")
+	args = append(args, time.Now())
+	args = append(args, idInt)
+
+	// Eksekusi query
 	query := fmt.Sprintf("UPDATE products SET %s WHERE id = ?", strings.Join(fields, ", "))
-	result, err := db.Exec(query, values...)
+	_, err = db.Exec(query, args...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal mengupdate produk"})
 		return
 	}
 
-	// Cek apakah ada baris yang terpengaruh (terupdate)
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"message": "⚠️ Produk tidak ditemukan"})
-		return
-	}
-
-	// Kirim response sukses
-	c.JSON(http.StatusOK, gin.H{
-		"message": "✅ Produk berhasil diupdate",
-		"updated": input,
-	})
+	c.JSON(http.StatusOK, gin.H{"message": "✅ Produk berhasil diupdate"})
 }
 
 // ++++++++++++++++++++++++
@@ -718,9 +629,8 @@ func UpdateProduct(c *gin.Context, db *sql.DB) {
 //
 // ++++++++++++++++++++++++
 func DeleteProduct(c *gin.Context, db *sql.DB) {
-	//id := c.Param("id")
 	//id string to int
-	idInt, id, ok := GetIDParam(c)
+	idInt, _, ok := GetIDParam(c)
 	if !ok {
 		return
 	}
@@ -730,7 +640,7 @@ func DeleteProduct(c *gin.Context, db *sql.DB) {
 	}
 
 	// Eksekusi delete
-	_, err := db.Exec("DELETE FROM products WHERE id = ?", id)
+	_, err := db.Exec("DELETE FROM products WHERE id = ?", idInt)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal menghapus produk"})
 		return
@@ -738,10 +648,6 @@ func DeleteProduct(c *gin.Context, db *sql.DB) {
 
 	c.JSON(http.StatusOK, gin.H{"message": "✅ Produk berhasil dihapus"})
 }
-
-
-
-
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -834,6 +740,7 @@ func GetAllProductVariants(c *gin.Context, db *sql.DB) {
 // ++++++++++++++++++++++++
 //
 //	Product Variant CREATE Helper
+//
 // ValidateProductVariantInput adalah fungsi untuk memvalidasi input varian produk.
 func ValidateProductVariantInput(productVariant *ProductVariantModel) error {
 	// Validasi nama varian produk
@@ -852,8 +759,8 @@ func ValidateProductVariantInput(productVariant *ProductVariantModel) error {
 	}
 
 	// Validasi stok varian produk, stok tidak boleh negatif
-	if productVariant.Stock < 0 {
-		return fmt.Errorf("❌ Stok varian produk tidak boleh negatif")
+	if productVariant.Stock < 1 {
+		return fmt.Errorf("❌ Stok varian produk harus diisi dan tidak boleh negatif")
 	}
 
 	// Validasi diskon jika ada, jika varian produk diskon, pastikan harga diskon lebih kecil dari harga normal
@@ -874,7 +781,6 @@ func ValidateProductVariantInput(productVariant *ProductVariantModel) error {
 	return nil
 }
 
-//
 // ++++++++++++++++++++++++
 func CreateProductVariant(c *gin.Context, db *sql.DB) {
 	var productVariant ProductVariantModel
@@ -895,6 +801,16 @@ func CreateProductVariant(c *gin.Context, db *sql.DB) {
 	// Validasi input
 	if err := ValidateProductVariantInput(&productVariant); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// Validasi apakah produk dengan ID tersebut punya is_varians = true
+	isVarians, err := CheckIfVarians(db, int(productVariant.ProductID))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal memeriksa varian produk"})
+		return
+	}
+	if !isVarians {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "❌ Produk tidak memiliki varian"})
 		return
 	}
 
@@ -936,18 +852,18 @@ func CreateProductVariant(c *gin.Context, db *sql.DB) {
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "✅ Varian produk berhasil dibuat",
 		"data": gin.H{
-			"id":              productVariant.ID,
-			"product_id":      productVariant.ProductID,
-			"name":            productVariant.Name,
-			"color":           productVariant.Color,
-			"price":           productVariant.Price,
-			"is_discounted":   productVariant.IsDiscounted,
-			"discount_price":  productVariant.DiscountPrice,
-			"stock":           productVariant.Stock,
-			"is_service":      productVariant.IsService,
-			"search_vector":   productVariant.SearchVector,
-			"created_at":      productVariant.CreatedAt,
-			"updated_at":      productVariant.UpdatedAt,
+			"id":             productVariant.ID,
+			"product_id":     productVariant.ProductID,
+			"name":           productVariant.Name,
+			"color":          productVariant.Color,
+			"price":          productVariant.Price,
+			"is_discounted":  productVariant.IsDiscounted,
+			"discount_price": productVariant.DiscountPrice,
+			"stock":          productVariant.Stock,
+			"is_service":     productVariant.IsService,
+			"search_vector":  productVariant.SearchVector,
+			"created_at":     productVariant.CreatedAt,
+			"updated_at":     productVariant.UpdatedAt,
 		},
 	})
 }
@@ -1028,6 +944,16 @@ func UpdateProductVariant(c *gin.Context, db *sql.DB) {
 		if !ValidateRecordExistence(c, db, "products", int(pidFloat)) {
 			return
 		}
+		// Validasi apakah produk dengan ID tersebut punya is_varians = true
+		isVarians, err := CheckIfVarians(db, int(input["product_id"].(float64)))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal memeriksa varian produk"})
+			return
+		}
+		if !isVarians {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "❌ Produk tidak memiliki varian"})
+			return
+		}
 	}
 
 	// Update waktu
@@ -1070,7 +996,7 @@ func UpdateProductVariant(c *gin.Context, db *sql.DB) {
 
 func DeleteProductVariant(c *gin.Context, db *sql.DB) {
 	// Ambil ID dari parameter
-	idInt, idStr, ok := GetIDParam(c)
+	idInt, _, ok := GetIDParam(c)
 	if !ok {
 		return
 	}
@@ -1081,7 +1007,7 @@ func DeleteProductVariant(c *gin.Context, db *sql.DB) {
 	}
 
 	// Eksekusi DELETE
-	_, err := db.Exec("DELETE FROM product_variants WHERE id = ?", idStr)
+	_, err := db.Exec("DELETE FROM product_variants WHERE id = ?", idInt)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal menghapus varian produk"})
 		return
@@ -1090,24 +1016,13 @@ func DeleteProductVariant(c *gin.Context, db *sql.DB) {
 	c.JSON(http.StatusOK, gin.H{"message": "✅ Varian produk berhasil dihapus"})
 }
 
-
-
-
-
-
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
 
 // ===========================
 // 🖼️ Product Image Management
 // ===========================
 func ProductImageRoutes(r *gin.Engine, db *sql.DB) {
 	api := r.Group("/api/v1/product-images")
-
-	// // 🟢 Public untuk semua yang login
-	// api.GET("", AuthMiddleware(), func(c *gin.Context) {
-	// 	GetAllCategories(c, db)
-	// })
 
 	// 🟢 Public untuk semua tanpa login
 	api.GET("", func(c *gin.Context) {
@@ -1190,22 +1105,11 @@ func CreateProductImage(c *gin.Context, db *sql.DB) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "⚠️ URL gambar tidak valid"})
 		return
 	}
-	
 
 	// Cek apakah product_id valid
 	if !ValidateRecordExistence(c, db, "products", int(input.ProductID)) {
 		return
 	}
-
-	// valid, err := IsValidID(db, "products", int(input.ProductID))
-	// if err != nil {
-	// 	c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal memeriksa product_id"})
-	// 	return
-	// }
-	// if !valid {
-	// 	c.JSON(http.StatusBadRequest, gin.H{"error": "⚠️ product_id tidak ditemukan"})
-	// 	return
-	// }
 
 	result, err := db.Exec(`INSERT INTO product_images (product_id, image_url) VALUES (?, ?)`, input.ProductID, input.ImageURL)
 	if err != nil {
@@ -1252,7 +1156,6 @@ func UpdateProductImage(c *gin.Context, db *sql.DB) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "⚠️ URL gambar tidak valid"})
 		return
 	}
-	
 
 	// Siapkan query dan args
 	var query string
@@ -1362,7 +1265,6 @@ func CartRoutes(r *gin.Engine, db *sql.DB) {
 	}
 }
 
-
 // ++++++++++++++++++++++++
 //
 //	Cart READ
@@ -1379,7 +1281,7 @@ func GetCartByID(c *gin.Context, db *sql.DB) {
 	}
 
 	var cart CartModel
-	err := db.QueryRow("SELECT id, total_price, created_at, updated_at FROM cart WHERE id = ?", id).
+	err := db.QueryRow("SELECT id, total_price, created_at, updated_at FROM carts WHERE id = ?", id).
 		Scan(&cart.ID, &cart.TotalPrice, &cart.CreatedAt, &cart.UpdatedAt)
 
 	if err != nil {
@@ -1390,7 +1292,6 @@ func GetCartByID(c *gin.Context, db *sql.DB) {
 	c.JSON(http.StatusOK, gin.H{"data": cart})
 }
 
-
 // ++++++++++++++++++++++++
 //
 //	Cart CREATE
@@ -1400,7 +1301,7 @@ func CreateCart(c *gin.Context, db *sql.DB) {
 	var cart CartModel
 
 	if err := c.ShouldBindJSON(&cart); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "❌ Data tidak valid"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "❌ Data tidak valid, masukkan id user"})
 		return
 	}
 
@@ -1409,12 +1310,10 @@ func CreateCart(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	cart.TotalPrice = 0
-	cart.CreatedAt = time.Now()
-	cart.UpdatedAt = time.Now()
+	cart.TotalPrice = 0 // Set total_price ke 0 saat membuat cart baru
 
-	query := "INSERT INTO cart (id, total_price, created_at, updated_at) VALUES (?, ?, ?, ?)"
-	_, err := db.Exec(query, cart.ID, cart.TotalPrice, cart.CreatedAt, cart.UpdatedAt)
+	query := "INSERT INTO carts (id, total_price, created_at, updated_at) VALUES (?, ?, NOW(), NOW())"
+	_, err := db.Exec(query, cart.ID, cart.TotalPrice)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal membuat cart"})
 		return
@@ -1447,7 +1346,7 @@ func DeleteCart(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	_, err := db.Exec("DELETE FROM cart WHERE id = ?", id)
+	_, err := db.Exec("DELETE FROM carts WHERE id = ?", id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal menghapus cart"})
 		return
@@ -1456,11 +1355,7 @@ func DeleteCart(c *gin.Context, db *sql.DB) {
 	c.JSON(http.StatusOK, gin.H{"message": "✅ Cart berhasil dihapus"})
 }
 
-
-
-
-
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // =========================
 // 🛒 Cart Item Management
 // =========================
@@ -1480,7 +1375,7 @@ func CartItemRoutes(r *gin.Engine, db *sql.DB) {
 		})
 
 		// Update quantity (jika dibutuhkan nanti)
-		customerCartItem.PUT("/:id", func(c *gin.Context) {
+		customerCartItem.PATCH("/:id", func(c *gin.Context) {
 			UpdateCartItemQuantity(c, db)
 		})
 
@@ -1491,9 +1386,9 @@ func CartItemRoutes(r *gin.Engine, db *sql.DB) {
 	}
 }
 
-    //+++++++++++++++++++++++++++++++++
-	// Cart Item CREATE MY CART
-	//+++++++++++++++++++++++++++++++++
+// +++++++++++++++++++++++++++++++++
+// Cart Item CREATE MY CART
+// +++++++++++++++++++++++++++++++++
 func CreateCartItem(c *gin.Context, db *sql.DB) {
 	userID := GetUserID(c) // cart_id juga
 
@@ -1507,6 +1402,15 @@ func CreateCartItem(c *gin.Context, db *sql.DB) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "❌ Input tidak valid"})
 		return
 	}
+	// Cek apakah input ada product_id dan quantity
+	if input.ProductID == 0 || input.Quantity == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "❌ product_id dan quantity harus diisi"})
+		return
+	}
+	// Cek apakah product_id valid
+	if !ValidateRecordExistence(c, db, "products", input.ProductID) {
+		return
+	}
 
 	// Cek apakah cart ada
 	if !ValidateRecordExistence(c, db, "carts", userID) {
@@ -1515,17 +1419,18 @@ func CreateCartItem(c *gin.Context, db *sql.DB) {
 
 	// Ambil data product: is_varians, price, stock
 	var isVarians bool
-	var productPrice, productStock int
+	var is_discounted *bool
+	var productPrice, productStock, discount_price *int
 	err := db.QueryRow(`
-		SELECT is_varians, price, stock FROM products WHERE id = ?
-	`, input.ProductID).Scan(&isVarians, &productPrice, &productStock)
+		SELECT is_varians, price, stock, is_discounted, discount_price FROM products WHERE id = ?
+	`, input.ProductID).Scan(&isVarians, &productPrice, &productStock, &is_discounted, &discount_price)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "❌ Produk tidak ditemukan"})
 		return
 	}
 
 	var stockAvailable int
-	pricePerItem := productPrice
+	var pricePerItem int
 
 	// Kalau pakai variant
 	if isVarians {
@@ -1533,21 +1438,34 @@ func CreateCartItem(c *gin.Context, db *sql.DB) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "❌ Product variant harus diisi karena produk punya variasi"})
 			return
 		}
-
+		var isDiscount bool
+		var productVarPrice int
+		var productVarDisprice *int
 		// Ambil stok dari variant
 		err := db.QueryRow(`
-			SELECT stock FROM product_variants WHERE id = ? AND product_id = ?
-		`, *input.ProductVariantID, input.ProductID).Scan(&stockAvailable)
+			SELECT stock, price, is_discounted, discount_price FROM product_variants WHERE id = ? AND product_id = ?
+		`, int(*input.ProductVariantID), input.ProductID).Scan(&stockAvailable, &productVarPrice, &isDiscount, &productVarDisprice)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "❌ Variant tidak ditemukan untuk produk ini"})
 			return
+		}
+		// Cek apakah variant ada diskon
+		if isDiscount {
+			pricePerItem = *productVarDisprice
+		} else {
+			pricePerItem = productVarPrice
 		}
 	} else {
 		if input.ProductVariantID != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "❌ Produk ini tidak memiliki variasi, hapus product_variant_id"})
 			return
 		}
-		stockAvailable = productStock
+		stockAvailable = *productStock
+		if *is_discounted {
+			pricePerItem = *discount_price
+		} else {
+			pricePerItem = *productPrice
+		}
 	}
 
 	if input.Quantity <= 0 || input.Quantity > stockAvailable {
@@ -1580,10 +1498,9 @@ func CreateCartItem(c *gin.Context, db *sql.DB) {
 	c.JSON(http.StatusOK, gin.H{"message": "✅ Item berhasil ditambahkan ke cart"})
 }
 
-
-    //+++++++++++++++++++++++++++++++++
-	// Cart Item READ MY CART
-	//+++++++++++++++++++++++++++++++++
+// +++++++++++++++++++++++++++++++++
+// Cart Item READ MY CART
+// +++++++++++++++++++++++++++++++++
 func MyCartItems(c *gin.Context, db *sql.DB) {
 	userID := GetUserID(c) // Ini cart_id juga
 
@@ -1642,9 +1559,9 @@ func MyCartItems(c *gin.Context, db *sql.DB) {
 	})
 }
 
-    //+++++++++++++++++++++++++++++++++
-	// Cart Item UPDATE MY CART
-	//+++++++++++++++++++++++++++++++++
+// +++++++++++++++++++++++++++++++++
+// Cart Item UPDATE MY CART
+// +++++++++++++++++++++++++++++++++
 func UpdateCartItemQuantity(c *gin.Context, db *sql.DB) {
 	userID := GetUserID(c)
 	itemID := c.Param("id")
@@ -1653,7 +1570,7 @@ func UpdateCartItemQuantity(c *gin.Context, db *sql.DB) {
 		Quantity int `json:"quantity"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil || input.Quantity <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "❌ Quantity tidak valid"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "❌ Quantity tidak valid atau tidak diisi"})
 		return
 	}
 
@@ -1672,10 +1589,10 @@ func UpdateCartItemQuantity(c *gin.Context, db *sql.DB) {
 
 	// Cek apakah produk menggunakan variant
 	var isVarians bool
-	err = db.QueryRow(`SELECT is_varians FROM products WHERE id = ?`, productID).Scan(&isVarians)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal cek status produk"})
-		return
+	if productVariantID == nil {
+		isVarians = false
+	} else {
+		isVarians = true
 	}
 
 	var stockAvailable int
@@ -1737,9 +1654,9 @@ func UpdateCartItemQuantity(c *gin.Context, db *sql.DB) {
 	c.JSON(http.StatusOK, gin.H{"message": "✅ Quantity berhasil diupdate"})
 }
 
-    //+++++++++++++++++++++++++++++++++
-	// Cart Item DELETE MY CART
-	//+++++++++++++++++++++++++++++++++
+// +++++++++++++++++++++++++++++++++
+// Cart Item DELETE MY CART
+// +++++++++++++++++++++++++++++++++
 func DeleteCartItem(c *gin.Context, db *sql.DB) {
 	userID := GetUserID(c)
 	itemID := c.Param("id")
@@ -1773,9 +1690,7 @@ func DeleteCartItem(c *gin.Context, db *sql.DB) {
 
 	c.JSON(http.StatusOK, gin.H{"message": "🗑️ Item berhasil dihapus dari cart"})
 }
-	
 
-	
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 func CreateStockReservation(db *sql.DB, orderID, userID int, items []OrderItemModel) error {
@@ -1942,7 +1857,7 @@ func OrderRoutes(r *gin.Engine, db *sql.DB) {
 			CreateOrder(c, db)
 		})
 
-		// Lihat semua order milik user
+		// Lihat semua order milik user saat ini
 		customerOrder.GET("/my", func(c *gin.Context) {
 			GetMyOrders(c, db)
 		})
@@ -1958,7 +1873,6 @@ func OrderRoutes(r *gin.Engine, db *sql.DB) {
 		CheckAndExpireOrders(c, db)
 	})
 }
-
 
 // ++++++++++++++++++++++++
 //
@@ -1983,8 +1897,8 @@ func GetMyOrders(c *gin.Context, db *sql.DB) {
 
 	// Struct gabungan order dan items
 	type OrderWithItems struct {
-		Order OrderModel        `json:"order"`
-		Items []OrderItemModel  `json:"items"`
+		Order OrderModel       `json:"order"`
+		Items []OrderItemModel `json:"items"`
 	}
 
 	var allOrders []OrderWithItems
@@ -2042,7 +1956,6 @@ func GetMyOrders(c *gin.Context, db *sql.DB) {
 		"orders": allOrders,
 	})
 }
-
 
 // ++++++++++++++++++++++++
 //
@@ -2135,7 +2048,7 @@ func CreateOrder(c *gin.Context, db *sql.DB) {
 
 	// Hitung durasi timer berdasarkan hati user
 	var heartCount int
-	if err := db.QueryRow(`SELECT hearts FROM users WHERE id = ?`, userID).Scan(&heartCount); err != nil {
+	if err := db.QueryRow(`SELECT heart FROM users WHERE id = ?`, userID).Scan(&heartCount); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal mengambil jumlah hati"})
 		return
 	}
@@ -2202,19 +2115,18 @@ func CreateOrder(c *gin.Context, db *sql.DB) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "✅ Order berhasil dibuat",
-		"order_id": orderID,
+		"message":    "✅ Order berhasil dibuat",
+		"order_id":   orderID,
 		"expired_at": expiration,
 	})
 }
-
 
 // ++++++++++++++++++++++++
 //
 //	Order UPDATE
 //
 // ++++++++++++++++++++++++
-//start helper
+// start helper
 func DeleteStockReservationTx(tx *sql.Tx, orderID int) error {
 	// Hapus detail reservasi stok
 	_, err := tx.Exec(`
@@ -2295,6 +2207,7 @@ func GetOrderItems(db *sql.DB, orderID int) ([]OrderItemModel, error) {
 
 	return orderItems, nil
 }
+
 //end helper
 
 func CancelOrder(c *gin.Context, db *sql.DB) {
@@ -2374,7 +2287,6 @@ func CancelOrder(c *gin.Context, db *sql.DB) {
 
 	c.JSON(http.StatusOK, gin.H{"message": "Order berhasil dibatalkan"})
 }
-
 
 // ++++++++++++++++++++++++
 //
@@ -2474,7 +2386,6 @@ func DeleteStockReservationAndReturn(orderID int, db *sql.DB) {
 	}
 }
 
-
 func CheckAndExpireOrders(c *gin.Context, db *sql.DB) {
 	// Query untuk mengambil semua order dengan status 'waitToBuy' dan timer_expiration yang lewat
 	rows, err := db.Query(`
@@ -2544,6 +2455,212 @@ func CheckAndExpireOrders(c *gin.Context, db *sql.DB) {
 	c.JSON(http.StatusOK, gin.H{"message": "Expired orders have been processed"})
 }
 
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+func StockReservationRoutes(r *gin.Engine, db *sql.DB) {
+	r.DELETE("/reservations/expired/clean", func(c *gin.Context) {
+		CleanExpiredReservations(c, db)
+	})
+
+	stock := r.Group("/api/v1/stock-reservations")
+	stock.Use(AuthMiddleware(), RoleMiddleware("user"))
+	{
+		stock.GET("", func(c *gin.Context) {
+			GetMyStockReservations(c, db)
+		})
+		stock.GET("/:id/details", func(c *gin.Context) {
+			GetStockReservationDetail(c, db)
+		})
+	}
+}
+
+func GetMyStockReservations(c *gin.Context, db *sql.DB) {
+	userID := c.GetInt("user_id")
+
+	// Ambil semua reservasi milik user ini
+	rows, err := db.Query(`
+		SELECT id, user_id, order_id, reserved_at, expired_at, created_at, updated_at
+		FROM temp_stock_reservations
+		WHERE user_id = ?
+		ORDER BY reserved_at DESC
+	`, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil data reservasi stok"})
+		return
+	}
+	defer rows.Close()
+
+	var reservations []TempStockReservationModel
+	for rows.Next() {
+		var r TempStockReservationModel
+		err := rows.Scan(
+			&r.ID, &r.UserID, &r.OrderID, &r.ReservedAt, &r.ExpiredAt, &r.CreatedAt, &r.UpdatedAt,
+		)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal parsing reservasi stok"})
+			return
+		}
+		reservations = append(reservations, r)
+	}
+
+	if len(reservations) == 0 {
+		c.JSON(http.StatusOK, gin.H{"message": "Tidak ada reservasi stok aktif"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"reservations": reservations})
+}
+func GetStockReservationDetail(c *gin.Context, db *sql.DB) {
+	reservationID := c.Param("id")
+
+	rows, err := db.Query(`
+		SELECT id, temp_reservation_id, product_id, product_variant_id, quantity, created_at, updated_at
+		FROM temp_stock_details
+		WHERE temp_reservation_id = ?
+	`, reservationID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengambil detail reservasi stok"})
+		return
+	}
+	defer rows.Close()
+
+	var details []TempStockDetailModel
+	for rows.Next() {
+		var d TempStockDetailModel
+		err := rows.Scan(
+			&d.ID, &d.TempReservationID, &d.ProductID, &d.ProductVariantID,
+			&d.Quantity, &d.CreatedAt, &d.UpdatedAt,
+		)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal parsing detail reservasi stok"})
+			return
+		}
+		details = append(details, d)
+	}
+
+	if len(details) == 0 {
+		c.JSON(http.StatusOK, gin.H{"message": "Tidak ada detail untuk reservasi ini"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"details": details})
+}
+
+type ExpiredReservationInfo struct {
+	ID               int
+	OrderID          int
+	ProductID        int
+	ProductVariantID sql.NullInt64
+	Quantity         int
+}
+
+func CleanExpiredReservations(c *gin.Context, db *sql.DB) {
+	// Ambil semua detail reservasi yang sudah expired
+	rows, err := db.Query(`
+		SELECT 
+			d.temp_reservation_id, r.order_id, d.product_id, d.product_variant_id, d.quantity
+		FROM temp_stock_details d
+		JOIN temp_stock_reservations r ON d.temp_reservation_id = r.id
+		WHERE r.expired_at <= NOW()
+	`)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal fetch expired reservations"})
+		return
+	}
+	defer rows.Close()
+
+	var details []ExpiredReservationInfo
+	reservationIDs := make(map[int]struct{}) // untuk memastikan unik
+	for rows.Next() {
+		var info ExpiredReservationInfo
+		if err := rows.Scan(&info.ID, &info.OrderID, &info.ProductID, &info.ProductVariantID, &info.Quantity); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal parsing data", "details": err.Error()})
+			return
+		}
+		details = append(details, info)
+		reservationIDs[info.ID] = struct{}{}
+	}
+
+	// Jika tidak ada data expired, kirimkan pesan informasi
+	if len(details) == 0 {
+		c.JSON(http.StatusOK, gin.H{"message": "Tidak ada reservasi expired"})
+		return
+	}
+
+	// Mulai transaksi untuk rollback stok dan update status order
+	tx, err := db.Begin()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal mulai transaksi", "details": err.Error()})
+		return
+	}
+
+	// Rollback stok untuk setiap produk atau varian
+	for _, d := range details {
+		var query string
+		var args []interface{}
+
+		if d.ProductVariantID.Valid {
+			// Update stok untuk product_variant
+			query = `UPDATE product_variants SET stock = stock + ? WHERE id = ?`
+			args = append(args, d.Quantity, d.ProductVariantID.Int64)
+		} else {
+			// Update stok untuk produk
+			query = `UPDATE products SET stock = stock + ? WHERE id = ?`
+			args = append(args, d.Quantity, d.ProductID)
+		}
+
+		_, err := tx.Exec(query, args...)
+		if err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal rollback stok", "details": err.Error()})
+			return
+		}
+	}
+
+	// Siapkan slice ID untuk update dan delete
+	var ids []interface{}
+	for id := range reservationIDs {
+		ids = append(ids, id)
+	}
+
+	// Membuat placeholder ? untuk query IN
+	placeholder := strings.Join(strings.Split(strings.Repeat("?,", len(ids)), ","), ",")
+	if len(ids) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "❌ Tidak ada ID reservasi untuk diproses"})
+		return
+	}
+
+	// Update status order menjadi expired berdasarkan reservasi expired saja
+	_, err = tx.Exec(
+		fmt.Sprintf(`UPDATE orders SET status = 'expired' 
+		WHERE id IN (SELECT order_id FROM temp_stock_reservations WHERE expired_at <= NOW() AND id IN (%s))`, placeholder),
+		ids...,
+	)
+	if err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal update status order"})
+		return
+	}
+
+	// Hapus reservasi yang sudah expired saja
+	_, err = tx.Exec(
+		fmt.Sprintf(`DELETE FROM temp_stock_reservations WHERE expired_at <= NOW() AND id IN (%s)`, placeholder),
+		ids...,
+	)
+	if err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal hapus reservasi", "details": err.Error()})
+		return
+	}
+
+	// Commit transaksi
+	if err := tx.Commit(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal commit perubahan", "details": err.Error()})
+		return
+	}
+
+	// Kirimkan respon sukses
+	c.JSON(http.StatusOK, gin.H{"message": "✅ Expired reservations dibersihkan & stok dikembalikan"})
+}
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -2560,11 +2677,11 @@ func RestockRequestRoutes(r *gin.Engine, db *sql.DB) {
 		})
 	}
 
-	// 🔐 Khusus employee
-	employeeRestock := r.Group("/api/v1/restock-requests")
-	employeeRestock.Use(AuthMiddleware(), RoleMiddleware("employee"))
+	// 🔐 Khusus employee dan admin
+	employeeAdminRestock := r.Group("/api/v1/restock-requests")
+	employeeAdminRestock.Use(AuthMiddleware(), RoleMiddleware("employee", "admin"))
 	{
-		employeeRestock.GET("", func(c *gin.Context) {
+		employeeAdminRestock.GET("", func(c *gin.Context) {
 			GetAllRestockRequests(c, db)
 		})
 	}
@@ -2573,9 +2690,6 @@ func RestockRequestRoutes(r *gin.Engine, db *sql.DB) {
 	adminRestock := r.Group("/api/v1/restock-requests")
 	adminRestock.Use(AuthMiddleware(), RoleMiddleware("admin"))
 	{
-		adminRestock.GET("", func(c *gin.Context) {
-			GetAllRestockRequests(c, db)
-		})
 		adminRestock.PATCH("/:id", func(c *gin.Context) {
 			UpdateRestockRequestStatus(c, db)
 		})
@@ -2586,7 +2700,9 @@ func RestockRequestRoutes(r *gin.Engine, db *sql.DB) {
 }
 
 // ++++++++++++++++++++++++
-//  RestockRequest READ
+//
+//	RestockRequest READ
+//
 // ++++++++++++++++++++++++
 func GetAllRestockRequests(c *gin.Context, db *sql.DB) {
 	status := c.Query("status")
@@ -2634,62 +2750,6 @@ func GetAllRestockRequests(c *gin.Context, db *sql.DB) {
 	})
 }
 
-// func GetAllRestockRequests(c *gin.Context, db *sql.DB) {
-// 	status := c.Query("status")
-// 	productID := c.Query("product_id")
-
-// 	// query := `SELECT id, user_id, product_id, message, status, created_at FROM restock_requests`
-// 	// var rows *sql.Rows
-// 	// var err error
-
-// 	// if status != "" {
-// 	// 	query += ` WHERE status = ?`
-// 	// 	rows, err = db.Query(query, status)
-// 	// } else if productID != "" {
-// 	// 	query += ` WHERE product_id = ?`
-// 	// 	rows, err = db.Query(query, productID)
-// 	// } else {
-// 	// 	rows, err = db.Query(query)
-// 	// }
-
-// 	//filter with status, product_id atau ambil semua data
-// 	query := `SELECT id, user_id, product_id, message, status, created_at FROM restock_requests WHERE 1=1`
-// 	args := []interface{}{}
-
-// 	if status != "" {
-// 		query += ` AND status = ?`
-// 		args = append(args, status)
-// 	}
-// 	if productID != "" {
-// 		query += ` AND product_id = ?`
-// 		args = append(args, productID)
-// 	}
-
-// 	rows, err := db.Query(query, args...)
-
-
-// 	if err != nil {
-// 		c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal mengambil data permintaan restock"})
-// 		return
-// 	}
-// 	defer rows.Close()
-
-// 	var requests []RestockRequestModel
-// 	for rows.Next() {
-// 		var r RestockRequestModel
-// 		if err := rows.Scan(&r.ID, &r.UserID, &r.ProductID, &r.Message, &r.Status, &r.CreatedAt); err != nil {
-// 			c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal membaca data"})
-// 			return
-// 		}
-// 		requests = append(requests, r)
-// 	}
-
-// 	c.JSON(http.StatusOK, gin.H{
-// 		"message": "✅ Semua permintaan restock berhasil diambil",
-// 		"data":    requests,
-// 	})
-// }
-
 // ++++++++++++++++++++++++
 //  RestockRequest CREATE
 // ++++++++++++++++++++++++
@@ -2720,7 +2780,7 @@ func CreateRestockRequest(c *gin.Context, db *sql.DB) {
 	}
 
 	// Cek apakah produk adalah varian
-	isVarians, err := CheckIfVarians(db, input.ProductID)
+	isVarians, err := CheckIfVarians(db, int(input.ProductID))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -2747,77 +2807,16 @@ func CreateRestockRequest(c *gin.Context, db *sql.DB) {
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "✅ Permintaan restock berhasil dibuat",
 		"data": gin.H{
-			"id":            lastID,
-			"user_id":       input.UserID,
-			"product_id":    input.ProductID,
+			"id":                 lastID,
+			"user_id":            input.UserID,
+			"product_id":         input.ProductID,
 			"product_variant_id": input.ProductVariantID,
-			"message":       input.Message,
-			"status":        "pending",
-			"created_at":    input.CreatedAt,
+			"message":            input.Message,
+			"status":             "pending",
+			"created_at":         input.CreatedAt,
 		},
 	})
 }
-
-
-// func CreateRestockRequest(c *gin.Context, db *sql.DB) {
-// 	var input RestockRequestModel
-
-// 	if err := c.ShouldBindJSON(&input); err != nil {
-// 		c.JSON(http.StatusBadRequest, gin.H{"error": "❌ Format JSON tidak valid"})
-// 		return
-// 	}
-
-// 	if input.UserID == 0 || input.ProductID == 0 || input.Message == "" {
-// 		c.JSON(http.StatusBadRequest, gin.H{"error": "❌ Semua field wajib diisi (user_id, product_id, message)"})
-// 		return
-// 	}
-
-// 	//Cek apakah user_id valid
-// 	if !ValidateRecordExistence(c, db, "users", int(input.UserID)) {
-// 		return
-// 	}
-// 	// if valid, err := IsValidID(db, "users", input.UserID)
-// 	// 	err != nil {
-// 	// 	c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal memeriksa user_id"})
-// 	// 	return
-// 	// } else if !valid {
-// 	// 	c.JSON(http.StatusBadRequest, gin.H{"error": "⚠️ user_id tidak ditemukan"})
-// 	// 	return
-// 	// }
-// 	// Cek apakah product_id valid
-// 	if !ValidateRecordExistence(c, db, "products", int(input.ProductID)) {
-// 		return
-// 	}
-// 	// if valid, err := IsValidID(db, "products", input.ProductID)
-// 	// 	err != nil {
-// 	// 	c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal memeriksa product_id"})
-// 	// 	return
-// 	// } else if !valid {
-// 	// 	c.JSON(http.StatusBadRequest, gin.H{"error": "⚠️ product_id tidak ditemukan"})
-// 	// 	return
-// 	// }
-
-// 	res, err := db.Exec(`INSERT INTO restock_requests (user_id, product_id, message, status, created_at) VALUES (?, ?, ?, 'pending', NOW())`,
-// 		input.UserID, input.ProductID, input.Message)
-// 	if err != nil {
-// 		c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal mengirim permintaan restock"})
-// 		return
-// 	}
-// 	lastID, _ := res.LastInsertId()
-
-
-// 	c.JSON(http.StatusCreated, gin.H{
-// 		"message": "✅ Permintaan restock berhasil dibuat",
-// 		"data": gin.H{
-// 			"id":        lastID,
-// 			"user_id":    input.UserID,
-// 			"product_id": input.ProductID,
-// 			"message":    input.Message,
-// 			"status":     "pending",
-// 			"created_at": input.CreatedAt,
-// 		},
-// 	})
-// }
 
 // ++++++++++++++++++++++++
 //  RestockRequest UPDATE
@@ -2843,7 +2842,7 @@ func UpdateRestockRequestStatus(c *gin.Context, db *sql.DB) {
 	// Cek apakah status valid
 	validStatuses := map[string]bool{"pending": true, "seen": true, "responded": true}
 	if !validStatuses[input.Status] {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "❌ Status tidak valid"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "❌ Status tidak valid permitted (pending, seen, responded)"})
 		return
 	}
 
@@ -2876,68 +2875,6 @@ func UpdateRestockRequestStatus(c *gin.Context, db *sql.DB) {
 	})
 }
 
-
-// func UpdateRestockRequestStatus(c *gin.Context, db *sql.DB) {
-// 	//id := c.Param("id")
-// 	//id string to int
-// 	idInt, id, ok := GetIDParam(c)
-// 	if !ok {
-// 		return
-// 	}
-// 	var input struct {
-// 		Status string `json:"status"`
-// 	}
-// 	// intID, err := strconv.Atoi(id)
-// 	// if err != nil {
-// 	// 	c.JSON(http.StatusBadRequest, gin.H{"error": "❌ ID harus berupa angka"})
-// 	// 	return
-// 	// }
-
-// 	//Cek apakah id valid
-// 	if !ValidateRecordExistence(c, db, "restock_requests", idInt) {
-// 		return
-// 	}
-// 	// if valid, err := IsValidID(db, "restock_requests", intID); err != nil {
-// 	// 	c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal memeriksa ID permintaan"})
-// 	// 	return
-// 	// } else if !valid {
-// 	// 	c.JSON(http.StatusNotFound, gin.H{"error": "❌ id Permintaan tidak ditemukan"})
-// 	// 	return
-// 	// }
-
-// 	if err := c.ShouldBindJSON(&input); err != nil {
-// 		c.JSON(http.StatusBadRequest, gin.H{"error": "❌ Format data tidak valid"})
-// 		return
-// 	}
-
-// 	// Cek apakah status valid
-// 	validStatuses := map[string]bool{"pending": true, "seen": true, "responded": true}
-// 	if !validStatuses[input.Status] {
-// 		c.JSON(http.StatusBadRequest, gin.H{"error": "❌ Status tidak valid"})
-// 		return
-// 	}
-
-// 	result, err := db.Exec(`UPDATE restock_requests SET status = ? WHERE id = ?`, input.Status, id)
-// 	if err != nil {
-// 		c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal mengupdate status"})
-// 		return
-// 	}
-
-// 	rowsAffected, _ := result.RowsAffected()
-// 	if rowsAffected == 0 {
-// 		c.JSON(http.StatusNotFound, gin.H{"message": "⚠️ Permintaan tidak ditemukan"})
-// 		return
-// 	}
-
-// 	c.JSON(http.StatusOK, gin.H{
-// 		"message": "✅ Status permintaan restock diperbarui",
-// 		"data": gin.H{
-// 			"id":     id,
-// 			"status": input.Status,
-// 		},
-// 	})
-// }
-
 // ++++++++++++++++++++++++
 //  RestockRequest DELETE
 // ++++++++++++++++++++++++
@@ -2953,7 +2890,7 @@ func DeleteRestockRequest(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	_, error := db.Exec(`DELETE FROM restock_requests WHERE id = ?`, id)
+	_, error := db.Exec(`DELETE FROM restock_requests WHERE id = ?`, idInt)
 	if error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal menghapus permintaan"})
 		return
@@ -3057,13 +2994,6 @@ func CreateNotification(c *gin.Context, db *sql.DB) {
 	if !ValidateRecordExistence(c, db, "users", int(input.UserID)) {
 		return
 	}
-	// if valid, err := IsValidID(db, "users", input.UserID); err != nil {
-	// 	c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal memeriksa user_id"})
-	// 	return
-	// } else if !valid {
-	// 	c.JSON(http.StatusBadRequest, gin.H{"error": "⚠️ user_id tidak ditemukan"})
-	// 	return
-	// }
 
 	res, err := db.Exec(`INSERT INTO notifications (user_id, message, is_read, created_at) VALUES (?, ?, false, NOW())`, input.UserID, input.Message)
 	if err != nil {
@@ -3074,10 +3004,10 @@ func CreateNotification(c *gin.Context, db *sql.DB) {
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "✅ Notifikasi berhasil dibuat",
 		"data": gin.H{
-			"id":        lastID,
-			"user_id":    input.UserID,
-			"message":    input.Message,
-			"is_read":    false,
+			"id":      lastID,
+			"user_id": input.UserID,
+			"message": input.Message,
+			"is_read": false,
 		},
 	})
 }
@@ -3098,18 +3028,7 @@ func MarkNotificationRead(c *gin.Context, db *sql.DB) {
 	if !ValidateRecordExistence(c, db, "notifications", idInt) {
 		return
 	}
-	// id := c.Param("id")
-	// if intID, err := strconv.Atoi(id); err != nil {
-	// 	c.JSON(http.StatusBadRequest, gin.H{"error": "❌ ID harus berupa angka"})
-	// 	return
-	// } else if valid, err := IsValidID(db, "notifications", intID); err != nil {
-	// 	c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal memeriksa ID notifikasi"})
-	// 	return
-	// } else if !valid {
-	// 	c.JSON(http.StatusNotFound, gin.H{"error": "❌ ID Notifikasi tidak ditemukan"})
-	// 	return
-	// }
-	// Cek apakah notifikasi Sudah dibaca
+
 	var isRead bool
 	error := db.QueryRow("SELECT is_read FROM notifications WHERE id = ?", id).Scan(&isRead)
 	if error != nil {
@@ -3149,17 +3068,8 @@ func DeleteNotification(c *gin.Context, db *sql.DB) {
 	if !ValidateRecordExistence(c, db, "notifications", idInt) {
 		return
 	}
-	// id := c.Param("id")
-	// if intID, err := strconv.Atoi(id); err != nil {
-	// 	c.JSON(http.StatusBadRequest, gin.H{"error": "❌ ID harus berupa angka"})
-	// 	return
-	// } else if valid, err := IsValidID(db, "notifications", intID); err != nil {
-	// 	c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal memeriksa ID notifikasi"})
-	// 	return
-	// } else if !valid {
-	// 	c.JSON(http.StatusNotFound, gin.H{"error": "❌ ID Notifikasi tidak ditemukan"})
-	// 	return
-	// }
+
+	// Hapus notifikasi dari database
 	_, err := db.Exec("DELETE FROM notifications WHERE id = ?", id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "❌ Gagal menghapus notifikasi"})
@@ -3200,16 +3110,3 @@ func GetNotificationByID(c *gin.Context, db *sql.DB) {
 }
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// ++++++++++++++++++++++++
-//  Images READ
-// ++++++++++++++++++++++++
-// ++++++++++++++++++++++++
-//  Images CREATE
-// ++++++++++++++++++++++++
-// ++++++++++++++++++++++++
-//  Images UPDATE
-// ++++++++++++++++++++++++
-// ++++++++++++++++++++++++
-//  Images DELETE
-// ++++++++++++++++++++++++
